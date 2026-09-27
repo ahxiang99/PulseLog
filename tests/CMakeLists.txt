@@ -15,6 +15,9 @@ FetchContent_MakeAvailable(googletest)
 # Your firmware headers — pure C++ ones only
 set(FIRMWARE_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/../Inc
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Inc/app
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Inc/sensors
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Inc/comm
     ${CMAKE_CURRENT_SOURCE_DIR}/../drivers
     ${CMAKE_CURRENT_SOURCE_DIR}/../drivers/common
     ${CMAKE_CURRENT_SOURCE_DIR}/../drivers/uart

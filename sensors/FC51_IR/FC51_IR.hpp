@@ -7,7 +7,7 @@
 
 #include <cstdint>
 
-class Tachometer
+class FC51_IR
 {
       public:
 	struct config {
@@ -18,8 +18,8 @@ class Tachometer
 		uint32_t stall_timeout_ms; // e.g. 500ms -> report 0 RPM if exceeded
 	} cfg_{};
 
-	Tachometer() = default;
-	~Tachometer() = default;
+	FC51_IR() = default;
+	~FC51_IR() = default;
 	Result<> initialize(const config &cfg = tach_cfg, const GPIO_Config &gpio_cfg = tim2_gpio_config);
 	void onCaptureIRQ();
 	void poll(uint32_t now_ms);

@@ -1,43 +1,75 @@
-#include <atomic>
-#include <cstdio>
+#include "pch.hpp"
 
-#include "AppMode.hpp"
-#include "FloatIntExtraction.hpp"
-#include "MAX30102.hpp"
+#include "app/AppMode.hpp"
+#include "app/init.hpp"
+#include "app/main_globals.hpp"
 #include "cli.hpp"
-#include "logger.hpp"
-#include "RingBuffer.hpp"
-#include "SensorPacket.hpp"
-#include "SHT40X.hpp"
 #include "cpp/ExtiInput.hpp"
 #include "cpp/II2C.hpp"
 #include "cpp/Stm32GpioPin.hpp"
 #include "cpp/UartRef.hpp"
-#include "drivers.hpp"
-#include "init.hpp"
-#include "pch.hpp"
+#include "FloatIntExtraction.hpp"
+#include "MAX30102.hpp"
+#include "RingBuffer.hpp"
+#include "sensors/SensorPacket.hpp"
+#include "SHT40X.hpp"
 #include "STTS22H.hpp"
-#include "Tachometer/Tachometer.hpp"
 
-// Global Variables
-Max30102 oxiSensor(I2C_Ref::from(getDrivers().i2c1));
-Cli cmd;
-std::atomic_bool g_cmd_complete{true};
+// Selects the packet format sent in AppMode::SendPacket — the framed binary
+// Packet<T, PacketType> protocol (console/PC tooling) vs. the raw
+// Env_Sensor_Data struct (legacy wire format). See appModeOperation().
+#define CONSOLE_APP
+
+// Referenced by Src/init.cpp (extern std::atomic<AppMode> g_AppMode;), which
+// wires it into the PC13 button's EXTI callback context — must keep external
+// linkage and this exact name.
 std::atomic<AppMode> g_AppMode{AppMode::Console};
-volatile bool g_cmd_execute{true};
 
-/* Function Declaration */
-static void register_fn_callback();
-static void appModeOperation(DriversList &, SensorsList &, uint32_t &);
-static void oled_screen_update(DriversList &, SensorsList &, uint32_t &);
+namespace
+{
 
-/* Main Program Start Here */
+/* ------------------------------------------------------------------ */
+/* Global state                                                        */
+/* ------------------------------------------------------------------ */
+
+Max30102 g_oxi_sensor(I2C_Ref::from(getDrivers().i2c1));
+Cli g_cli;
+
+std::atomic_bool g_cmd_complete{true};
+
+/* ------------------------------------------------------------------ */
+/* Forward declarations                                                */
+/* ------------------------------------------------------------------ */
+
+void registerCallbacks();
+void queueSensorReads(SpscRingBuffer<I2CCommand, 4> &cmd_queue, const AppMode &cur_mode, SensorsList &sensor_list);
+void runOximeter(DriversList &g);
+void serviceWatchdog(DriversList &g, SensorsList &sensor_list, uint32_t &wwdg_refresh_start);
+void appModeOperation(DriversList &g, SensorsList &sensor_list, uint32_t &measure_start);
+void oledScreenUpdate(DriversList &g, SensorsList &sensor_list, uint32_t &disp_start);
+
+/* Pushes a sensor read command onto the queue and logs (rather than
+   silently dropping) if the queue is full — a full queue means the I2C
+   consumer has stalled for multiple ticks and is worth surfacing. */
+void pushCommand(SpscRingBuffer<I2CCommand, 4> &cmd_queue, void (*fn)(void *), void *ctx, const char *sensor_name)
+{
+    if (!cmd_queue.push({.fn = fn, .ctx = ctx})) {
+	LOG_WARN("cmd_queue full, dropped {} read", sensor_name);
+    }
+}
+
+} // namespace
+
+/* ------------------------------------------------------------------ */
+/* Entry point                                                         */
+/* ------------------------------------------------------------------ */
+
 int main()
 {
     DriversList &g = getDrivers();
     SensorsList &sensor_list = getSensors();
 
-    register_fn_callback();
+    registerCallbacks();
     initDriver(g);
     initSensor(sensor_list);
 
@@ -46,113 +78,135 @@ int main()
     }
 
     SpscRingBuffer<I2CCommand, 4> cmd_queue;
+
     if constexpr (kOxiMeterEnable) {
 	Max30102::SensorConfig oxi_config{Max30102::FifoSampleAvg::AVG4,      Max30102::FifoRollOver::ENABLE,      0, Max30102::SensorMode::SpO2, Max30102::SpO2ADC::SCALE_4096,
 					  Max30102::SpO2SampleRate::RATE_100, Max30102::SpO2PulseWidth::ADC_18BITS};
-	oxiSensor.setConfig(oxi_config);
+	g_oxi_sensor.setConfig(oxi_config);
 
-	if (!oxiSensor.getInit()) {
-	    oxiSensor.init();
-	    LOG_INFO("Part ID: {}", static_cast<uint16_t>(oxiSensor.getPartID()));
+	if (!g_oxi_sensor.getInit()) {
+	    g_oxi_sensor.init();
+	    LOG_INFO("Part ID: {}", static_cast<uint16_t>(g_oxi_sensor.getPartID()));
 	}
     }
+
     uint32_t measure_start = g.my_systick.get_ticks();
     uint32_t disp_start = g.my_systick.get_ticks();
     uint32_t wwdg_refresh_start = g.my_systick.get_ticks();
 
     while (true) {
-	const AppMode curMode = g_AppMode.load(std::memory_order_relaxed);
+	const AppMode cur_mode = g_AppMode.load(std::memory_order_relaxed);
 
 	g.i2c1.processRx();
 	g.user_button.processEvent();
 
-	/* Feed the watchdog on its own cadence, inside the ~29-50ms window the
-	   configured prescaler/window/reload actually allows a refresh (the WWDG's
-	   window is far shorter than the 100ms sensor-poll timer below, so it must
-	   not be gated on that). Skipped while the sensor reports a fault so a
-	   stuck I2C bus lets the WWDG time out and reset the board. */
-	if (g.my_systick.get_ticks() - wwdg_refresh_start > 35) {
-	    if (sensor_list.SENSOR_SHT40X.getFaultStatus().isOk()) {
-		g.wwdg.resetCounter();
-	    }
-	    wwdg_refresh_start = g.my_systick.get_ticks();
-	}
+	serviceWatchdog(g, sensor_list, wwdg_refresh_start);
 
-	/* Timer to keep firing read command every 5 x 20ms .*/
-	if (g_cmd_execute) {
+	if (g_cmd_execute.load(std::memory_order_relaxed)) {
 	    g.gpio_led.toggle();
-	    if (curMode != AppMode::CliMode) {
-		cmd_queue.push({.fn = [](void *ctx) { static_cast<SHT40X *>(ctx)->read(); }, .ctx = &sensor_list.SENSOR_SHT40X});
-		cmd_queue.push({.fn = [](void *ctx) { static_cast<STTS22H *>(ctx)->read(); }, .ctx = &sensor_list.SENSOR_STTS22H});
-	    }
-	    g_cmd_execute = false;
+	    queueSensorReads(cmd_queue, cur_mode, sensor_list);
+	    g_cmd_execute.store(false, std::memory_order_relaxed);
 	}
 
-	/* To process i2c and Sensor Data*/
 	if constexpr (kSensorEnable) {
-	    /* Start Oximeter */
 	    if constexpr (kOxiMeterEnable) {
-		oxiSensor.processData();
-		cmd_queue.push({[](void *ctx) { static_cast<Max30102 *>(ctx)->read(); }, &oxiSensor});
-		char buf[128];
-		if (oxiSensor.isDataReady()) {
-		    FloatIntExtraction SpO2_v = convertInt(oxiSensor.getData().spo2);
-		    snprintf(buf, sizeof(buf), "BPM and SpO2 Found.");
-		    g.disp.show(buf, 0, 0, 0);
-		    snprintf(buf, sizeof(buf), "BPM: %d, SpO2: %d.%d", oxiSensor.getData().bpm, SpO2_v.Integer, SpO2_v.Decimal);
-		    g.disp.show(buf, 0, 8, 1);
-		    oxiSensor.clearDataReadyFlag();
-		}
-
-		if (!oxiSensor.isFingerPresent()) {
-		    snprintf(buf, sizeof(buf), "Finger not Found.");
-		    g.disp.show(buf, 0, 0, 0);
-		    g.disp.clear_page(1);
-		    g.disp.flush_page(1);
-		}
+		pushCommand(cmd_queue, [](void *ctx) { static_cast<Max30102 *>(ctx)->read(); }, &g_oxi_sensor, "oximeter");
+		runOximeter(g);
 	    }
-	    /* End Oximeter */
 
-	    /* Screen to update all the time. */
-	    oled_screen_update(g, sensor_list, disp_start);
-	    /* App Mode Changing */
+	    oledScreenUpdate(g, sensor_list, disp_start);
 	    appModeOperation(g, sensor_list, measure_start);
 	}
 
-	/* Command Queue */
 	if (g_cmd_complete.load(std::memory_order_acquire)) {
 	    I2CCommand cmd{};
 	    if (cmd_queue.pop(cmd)) {
 		g_cmd_complete.store(false, std::memory_order_relaxed);
-		getDrivers().i2c1.complete_flag_ = &g_cmd_complete;
+		g.i2c1.complete_flag_ = &g_cmd_complete;
 		cmd.fn(cmd.ctx);
 	    }
 	}
 
-	/* Sleep until the next interrupt (SysTick/DMA/UART/EXTI) instead of busy-spinning
-	 */
+	/* Sleep until the next interrupt (SysTick/DMA/UART/EXTI) instead of busy-spinning */
 	__WFI();
     }
-    return 0;
 }
 
-/* Function Body */
+/* ------------------------------------------------------------------ */
+/* Setup                                                               */
+/* ------------------------------------------------------------------ */
 
-void register_fn_callback()
+namespace
 {
-    getDrivers().uart2.onDataReceived([](void *ctx, const uint8_t *data, size_t len) { static_cast<Cli *>(ctx)->onUartData(data, len); }, &cmd);
-    cmd.setUart(UartRef::from(getDrivers().uart2));
-    // cmd.setSensor(&temp_sensor);
+
+void registerCallbacks()
+{
+    getDrivers().uart2.onDataReceived([](void *ctx, const uint8_t *data, size_t len) { static_cast<Cli *>(ctx)->onUartData(data, len); }, &g_cli);
+    g_cli.setUart(UartRef::from(getDrivers().uart2));
 
     if constexpr (kSensorEnable) {
-	getDrivers().i2c1.addReceiver(cmd);
-	getDrivers().i2c1.addReceiver(oxiSensor);
+	getDrivers().i2c1.addReceiver(g_cli);
+	if constexpr (kOxiMeterEnable) {
+	    getDrivers().i2c1.addReceiver(g_oxi_sensor);
+	}
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Main-loop helpers                                                   */
+/* ------------------------------------------------------------------ */
+
+/* Fires every 5 x 20ms tick (set by TIM3_IRQHandler, see Src/isr.cpp).
+   Skipped in CLI mode so a queued read doesn't clobber CLI framing. */
+void queueSensorReads(SpscRingBuffer<I2CCommand, 4> &cmd_queue, const AppMode &cur_mode, SensorsList &sensor_list)
+{
+    if (cur_mode == AppMode::CliMode) {
+	return;
+    }
+    pushCommand(cmd_queue, [](void *ctx) { static_cast<SHT40X *>(ctx)->read(); }, &sensor_list.SENSOR_SHT40X, "SHT40X");
+    pushCommand(cmd_queue, [](void *ctx) { static_cast<STTS22H *>(ctx)->read(); }, &sensor_list.SENSOR_STTS22H, "STTS22H");
+}
+
+void runOximeter(DriversList &g)
+{
+    g_oxi_sensor.processData();
+
+    char buf[128];
+    if (g_oxi_sensor.isDataReady()) {
+	const FloatIntExtraction spo2 = convertInt(g_oxi_sensor.getData().spo2);
+	snprintf(buf, sizeof(buf), "BPM and SpO2 Found.");
+	g.disp.show(buf, 0, 0, 0);
+	snprintf(buf, sizeof(buf), "BPM: %d, SpO2: %d.%d", g_oxi_sensor.getData().bpm, spo2.Integer, spo2.Decimal);
+	g.disp.show(buf, 0, 8, 1);
+	g_oxi_sensor.clearDataReadyFlag();
+    }
+
+    if (!g_oxi_sensor.isFingerPresent()) {
+	snprintf(buf, sizeof(buf), "Finger not Found.");
+	g.disp.show(buf, 0, 0, 0);
+	g.disp.clear_page(1);
+	g.disp.flush_page(1);
+    }
+}
+
+/* Feeds the watchdog on its own cadence, inside the ~29-50ms window the
+   configured prescaler/window/reload actually allows a refresh (the WWDG's
+   window is far shorter than the 100ms sensor-poll timer below, so it must
+   not be gated on that). Skipped while the sensor reports a fault so a
+   stuck I2C bus lets the WWDG time out and reset the board. */
+void serviceWatchdog(DriversList &g, SensorsList &sensor_list, uint32_t &wwdg_refresh_start)
+{
+    if (g.my_systick.get_ticks() - wwdg_refresh_start <= 35) {
+	return;
+    }
+    if (sensor_list.SENSOR_SHT40X.getFaultStatus().isOk()) {
+	g.wwdg.resetCounter();
+    }
+    wwdg_refresh_start = g.my_systick.get_ticks();
 }
 
 void appModeOperation(DriversList &g, SensorsList &s, uint32_t &measure_start)
 {
-    /* Send data packet to PC via Uart2 */
     switch (g_AppMode.load(std::memory_order_relaxed)) {
     case AppMode::Console: {
 	if (g.my_systick.get_ticks() - measure_start > 1000) {
@@ -164,21 +218,18 @@ void appModeOperation(DriversList &g, SensorsList &s, uint32_t &measure_start)
     }
     case AppMode::SendPacket: {
 	if (g.my_systick.get_ticks() - measure_start > 350) {
-
-#define CONSOLE_APP 1
-#if CONSOLE_APP
+#if defined CONSOLE_APP
 	    const Packet<SHT40X::SensorData, PacketType::PKT_SHT40> pkt_sht40_data{s.SENSOR_SHT40X.getValue()};
 	    g.uart2.send({pkt_sht40_data.raw(), pkt_sht40_data.size()});
 	    const Packet<float_t, PacketType::PKT_STTS2H> pkt_stts2h_data{s.SENSOR_STTS22H.getTemp()};
 	    g.uart2.send({pkt_stts2h_data.raw(), pkt_stts2h_data.size()});
-
 #else
 	    static uint16_t seq = 0;
 	    const Env_Sensor_Data sht40_data{
 		    .last_rx_tick = static_cast<uint16_t>(g.my_systick.get_ticks() - measure_start),
 		    .seq = seq++,
-		    .temp_x100 = static_cast<int16_t>(temp_sensor.getValue().temperature * 100),
-		    .rh_x100 = static_cast<int16_t>(temp_sensor.getValue().humidity * 100),
+		    .temp_x100 = static_cast<int16_t>(s.SENSOR_SHT40X.getValue().temperature * 100),
+		    .rh_x100 = static_cast<int16_t>(s.SENSOR_SHT40X.getValue().humidity * 100),
 	    };
 	    const Packet<Env_Sensor_Data, PacketType::PKT_ENV_SENSOR_DATA> pkt_sht40_data{sht40_data};
 	    g.uart1.send({pkt_sht40_data.raw(), pkt_sht40_data.size()});
@@ -187,17 +238,15 @@ void appModeOperation(DriversList &g, SensorsList &s, uint32_t &measure_start)
 	}
 	break;
     }
-
     case AppMode::CliMode: {
-	/* Command Line Interface Input Processing */
-	if (cmd.getState() == CliState::Completed) {
+	if (g_cli.getState() == CliState::Completed) {
 	    LOG_INFO("STH40: Temp:{}, Rh:{}", s.SENSOR_SHT40X.getValue().temperature, s.SENSOR_SHT40X.getValue().humidity);
-	    cmd.setState(CliState::WaitingForInput);
+	    g_cli.setState(CliState::WaitingForInput);
 	}
 	g.uart2.processRx();
-	if (cmd.getState() == CliState::WaitingForInput) {
-	    cmd.get_input();
-	    cmd.setState(CliState::Processing);
+	if (g_cli.getState() == CliState::WaitingForInput) {
+	    g_cli.get_input();
+	    g_cli.setState(CliState::Processing);
 	}
 	break;
     }
@@ -206,21 +255,18 @@ void appModeOperation(DriversList &g, SensorsList &s, uint32_t &measure_start)
     }
 }
 
-void oled_screen_update(DriversList &g, SensorsList &s, uint32_t &disp_start)
+void oledScreenUpdate(DriversList &g, SensorsList &s, uint32_t &disp_start)
 {
     char buf[128];
 
-    /* Update Time */
     RTC_DateTypeDef d = g.rtc.getDate();
     RTC_TimeTypeDef t = g.rtc.getTime();
     snprintf(buf, sizeof(buf), "20%02d/%02d/%02d %02d:%02d:%02d", d.Year, d.Month, d.Day, t.Hours, t.Minutes, t.Seconds);
     g.disp.show(buf, 0, 0, 0);
 
-    /* Update Mode */
     snprintf(buf, sizeof(buf), "AppMode: %s", namingTable[static_cast<uint8_t>(g_AppMode.load(std::memory_order_relaxed))].name);
     g.disp.show(buf, 0, 8, 1);
 
-    /* Update Sensor Value */
     if (g.my_systick.get_ticks() - disp_start > 500) {
 	FloatIntExtraction temp = convertInt(s.SENSOR_SHT40X.getValue().temperature);
 	snprintf(buf, sizeof(buf), "SHT40: Temp:%02d.%02d", temp.Integer, temp.Decimal);
@@ -235,96 +281,4 @@ void oled_screen_update(DriversList &g, SensorsList &s, uint32_t &disp_start)
     }
 }
 
-/* Interrupt Handler Function Start Here*/
-
-extern "C" void TIM3_IRQHandler(void)
-{
-    /* Clear Timer Interrupt */
-    getDrivers().timer.handleInterrupt();
-
-    if (getSensors().SENSOR_SHT40X.getState() == SHT40X::SensorState::MEASURING) {
-	getSensors().SENSOR_SHT40X.processData();
-    }
-
-    static uint8_t count = 0;
-    count++;
-    if (count == 5) {
-	g_cmd_execute = true;
-	count = 0;
-    }
-}
-
-extern "C" void DMA1_Stream0_IRQHandler(void)
-{
-    getDrivers().i2c1.handleRxDmaInterrupt();
-}
-
-extern "C" void DMA1_Stream7_IRQHandler(void)
-{
-    getDrivers().i2c1.handleTxDmaInterrupt();
-}
-template <typename Driver> static inline void handleTxDmaIfSupported(Driver &driver)
-{
-    if constexpr (Driver::kHasDma) {
-	driver.handleTxDmaInterrupt();
-    }
-}
-
-template <typename Driver> static inline void handleRxDmaIfSupported(Driver &driver)
-{
-    if constexpr (Driver::kHasDma) {
-	driver.handleRxDmaInterrupt();
-    }
-}
-
-extern "C" void DMA1_Stream6_IRQHandler(void)
-{
-    handleTxDmaIfSupported(getDrivers().uart2);
-}
-
-extern "C" void DMA1_Stream5_IRQHandler(void)
-{
-    handleRxDmaIfSupported(getDrivers().uart2);
-}
-
-extern "C" void USART1_IRQHandler(void)
-{
-    getDrivers().uart1.handleInterrupt();
-}
-
-extern "C" void USART2_IRQHandler(void)
-{
-    getDrivers().uart2.handleInterrupt();
-}
-
-extern "C" void I2C1_EV_IRQHandler(void)
-{
-    getDrivers().i2c1.handleEVInterrupt();
-}
-
-extern "C" void I2C1_ER_IRQHandler(void)
-{
-    getDrivers().i2c1.handleERInterrupt();
-}
-
-extern "C" void EXTI9_5_IRQHandler(void)
-{
-}
-
-extern "C" void EXTI15_10_IRQHandler(void)
-{
-    getDrivers().user_button.handleInterrupt();
-}
-
-extern "C" void TIM2_IRQHandler()
-{
-}
-
-extern "C" void HardFault_Handler(void)
-{
-    /* Put a breakpoint on the line below */
-    volatile int loop = 1;
-    while (loop) {
-	// If the debugger stops here, a HardFault occurred!
-    }
-}
+} // namespace

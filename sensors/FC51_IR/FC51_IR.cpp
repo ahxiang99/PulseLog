@@ -2,12 +2,12 @@
 // Created by ahxia on 1/8/2026.
 //
 
-#include "Tachometer.hpp"
+#include "FC51_IR.hpp"
 
 #include "board_config.hpp"
 #include "pch.hpp"
 
-Result<> Tachometer::initialize(const config &cfg, const GPIO_Config &gpio_cfg)
+Result<> FC51_IR::initialize(const config &cfg, const GPIO_Config &gpio_cfg)
 {
 	if (!Gpio::configureMux(gpio_cfg).isOk()) {
 		return Fail(Err::InvalidPinMask);
@@ -21,7 +21,7 @@ Result<> Tachometer::initialize(const config &cfg, const GPIO_Config &gpio_cfg)
 	RegisterUtils::setBits(t->CR1, TIM_CR1_CEN);
 	return Ok();
 }
-void Tachometer::onCaptureIRQ()
+void FC51_IR::onCaptureIRQ()
 {
 	if (auto t = timer_.getInstance(); t->SR & TIM_SR_CC1IF) {
 		RegisterUtils::clearBits(t->SR, TIM_SR_CC1IF);
@@ -36,19 +36,19 @@ void Tachometer::onCaptureIRQ()
 		stalled_ = false;
 	}
 }
-void Tachometer::poll(uint32_t now_ms)
+void FC51_IR::poll(uint32_t now_ms)
 {
 	if (!stalled_ && (now_ms - last_capture_ms_) > cfg_.stall_timeout_ms) {
 		rpm_ = 0.0f;
 		stalled_ = true;
 	}
 }
-float Tachometer::get_rpm() const
+float FC51_IR::get_rpm() const
 {
 	return rpm_;
 }
 
-Result<> Tachometer::configureTimerBase_(const TimerConfig &cfg)
+Result<> FC51_IR::configureTimerBase_(const TimerConfig &cfg)
 {
 	/* Enable Timer */
 	if (!timer_.initialize(cfg).isOk()) {
@@ -61,7 +61,7 @@ Result<> Tachometer::configureTimerBase_(const TimerConfig &cfg)
 	t->ARR = 0xFFFFFFFFu; // TIM2/TIM5 32-bit, free-run
 	return Ok();
 }
-void Tachometer::configureInputCapture_() const
+void FC51_IR::configureInputCapture_() const
 {
 	const auto t = timer_.getInstance();
 	// IC1 <- TI1

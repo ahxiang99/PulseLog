@@ -47,6 +47,7 @@ set(cpu_PARAMS
 # Sources
 set(sources_SRCS
         ${CMAKE_CURRENT_SOURCE_DIR}/Src/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Src/isr.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Src/init.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/drivers/drivers.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/drivers/gpio/cpp/Stm32Gpiopin.cpp
@@ -69,7 +70,7 @@ set(sources_SRCS
         ${CMAKE_CURRENT_SOURCE_DIR}/middleware/oled_disp/oled_disp.cpp
 
         ${CMAKE_CURRENT_SOURCE_DIR}/sensors/SHT40X/SHT40X.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/sensors/Tachometer/Tachometer.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/sensors/FC51_IR/FC51_IR.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/sensors/STTS22H/STTS22H.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Src/startup_stm32f401xx.S
 )
@@ -77,6 +78,9 @@ set(sources_SRCS
 # Include directories for all compilers
 set(include_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/Inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/Inc/app
+        ${CMAKE_CURRENT_SOURCE_DIR}/Inc/sensors
+        ${CMAKE_CURRENT_SOURCE_DIR}/Inc/comm
         ${CMAKE_CURRENT_SOURCE_DIR}/drivers
         ${CMAKE_CURRENT_SOURCE_DIR}/drivers/exti
         ${CMAKE_CURRENT_SOURCE_DIR}/drivers/gpio
@@ -100,7 +104,7 @@ set(include_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/sensors
         ${CMAKE_CURRENT_SOURCE_DIR}/sensors/SHT40X
         ${CMAKE_CURRENT_SOURCE_DIR}/sensors/STTS22H
-        ${CMAKE_CURRENT_SOURCE_DIR}/sensors/Tachometer
+        ${CMAKE_CURRENT_SOURCE_DIR}/sensors/FC51_IR
 )
 
 # Include directories for each compiler
