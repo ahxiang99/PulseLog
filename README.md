@@ -132,21 +132,21 @@ cmake --build build
 ```
 
 Post-build steps print memory usage and generate:
-- `build/baremetal-hardware-demo.elf`
-- `build/baremetal-hardware-demo.hex`
-- `build/baremetal-hardware-demo.bin`
+- `build/PulseLog.elf`
+- `build/PulseLog.hex`
+- `build/PulseLog.bin`
 
 ### Flash
 
 **With STM32CubeProgrammer:**
 ```bash
-STM32_Programmer_CLI -c port=SWD -d build/baremetal-hardware-demo.bin 0x08000000 -v -rst
+STM32_Programmer_CLI -c port=SWD -d build/PulseLog.bin 0x08000000 -v -rst
 ```
 
 **With OpenOCD:**
 ```bash
 openocd -f interface/stlink-v2.cfg -f target/stm32f4x.cfg \
-  -c "program build/baremetal-hardware-demo.bin 0x08000000 verify reset exit"
+  -c "program build/PulseLog.bin 0x08000000 verify reset exit"
 ```
 
 **With VS Code:** press **F5** — the launch configuration builds and flashes via ST-Link GDB server.
