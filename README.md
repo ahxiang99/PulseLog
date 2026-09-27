@@ -1,4 +1,4 @@
-# STM32F401 Bare-Metal Hardware Demo
+# PulseLog
 
 A bare-metal C++20 firmware project for the STM32F401XE (ARM Cortex-M4) demonstrating a multi-layer driver architecture with DMA-enabled I2C and UART, dual temperature sensors, and zero HAL dependency.
 
@@ -41,7 +41,7 @@ STTS2H     ──┘                        │
 ## Project Structure
 
 ```
-baremetal-hardware-demo/
+PulseLog/
 ├── Src/
 │   └── main.cpp              # Application entry point, ISR routing
 ├── Inc/
@@ -121,8 +121,8 @@ Optional (for VS Code debugging):
 ### Build
 
 ```bash
-git clone https://github.com/ahxiang99/baremetal-hardware-demo.git
-cd baremetal-hardware-demo
+git clone https://github.com/ahxiang99/PulseLog.git
+cd PulseLog
 
 # Configure (uses CMakePresets.json "default" preset)
 cmake --preset default
