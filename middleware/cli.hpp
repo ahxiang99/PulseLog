@@ -10,6 +10,7 @@
 
 #include "RingBuffer.hpp"
 #include "SHT40X.hpp"
+#include "fw_version.hpp"
 #include "cpp/DmaI2C.hpp"
 #include "cpp/II2C.hpp"
 #include "cpp/InterruptI2C.hpp"
@@ -45,6 +46,8 @@ class Cli
 		cmd_table = {
 			{{"help", [](void *ctx) { static_cast<Cli *>(ctx)->print_help(); }, this},
 			 {"get-temp", [](void *ctx) { static_cast<Cli *>(ctx)->cmd_get_temp(); },
+			  this},
+			 {"version", [](void *ctx) { static_cast<Cli *>(ctx)->cmd_get_version(); },
 			  this}}};
 	}
 	void setUart(UartRef uart)
@@ -141,7 +144,7 @@ class Cli
 	SHT40X *sensor_ = nullptr;
 	RingBuffer<uint8_t, 1024> lineBuffer;
 	CliState state_ = CliState::WaitingForInput;
-	std::array<cmd, 4> cmd_table;
+	std::array<cmd, 5> cmd_table;
 
 	void echo()
 	{
@@ -165,6 +168,7 @@ class Cli
 		LOG_PRINT("Available Commands:");
 		LOG_PRINT("help     : Show command list");
 		LOG_PRINT("get-temp : Get Temperature");
+		LOG_PRINT("version  : Show FW version");
 		state_ = CliState::WaitingForInput;
 	}
 
@@ -174,5 +178,13 @@ class Cli
 			return;
 		}
 		sensor_->read();
+	}
+
+	void cmd_get_version()
+	{
+		LOG_PRINT("FW Version: {}.{}.{} (build {})", static_cast<uint32_t>(fw::g_fw_version.major),
+			   static_cast<uint32_t>(fw::g_fw_version.minor), static_cast<uint32_t>(fw::g_fw_version.patch),
+			   fw::g_fw_version.build_number);
+		state_ = CliState::WaitingForInput;
 	}
 };

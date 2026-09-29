@@ -56,6 +56,16 @@ SECTIONS
     . = ALIGN(4);
   } >FLASH
 
+  /* Firmware version info (fw::g_fw_version, see Inc/fw_version.hpp).
+     Placed right after the fixed-size .isr_vector so it lands at a
+     deterministic flash offset external tooling can read directly. */
+  .fw_version :
+  {
+    . = ALIGN(4);
+    KEEP(*(.fw_version))
+    . = ALIGN(4);
+  } >FLASH
+
   /* The program code and other data into "FLASH" Rom type memory */
   .text :
   {

@@ -23,7 +23,7 @@
 // Referenced by Src/init.cpp (extern std::atomic<AppMode> g_AppMode;), which
 // wires it into the PC13 button's EXTI callback context — must keep external
 // linkage and this exact name.
-std::atomic<AppMode> g_AppMode{AppMode::Console};
+std::atomic<AppMode> g_AppMode{AppMode::CliMode};
 
 namespace
 {
