@@ -18,7 +18,6 @@
 // Selects the packet format sent in AppMode::SendPacket — the framed binary
 // Packet<T, PacketType> protocol (console/PC tooling) vs. the raw
 // Env_Sensor_Data struct (legacy wire format). See appModeOperation().
-#define CONSOLE_APP
 
 // Referenced by Src/init.cpp (extern std::atomic<AppMode> g_AppMode;), which
 // wires it into the PC13 button's EXTI callback context — must keep external
@@ -32,7 +31,6 @@ namespace
 /* Global state                                                        */
 /* ------------------------------------------------------------------ */
 
-Max30102 g_oxi_sensor(I2C_Ref::from(getDrivers().i2c1));
 Cli g_cli;
 
 std::atomic_bool g_cmd_complete{true};
@@ -41,9 +39,9 @@ std::atomic_bool g_cmd_complete{true};
 /* Forward declarations                                                */
 /* ------------------------------------------------------------------ */
 
-void registerCallbacks();
+void registerCallbacks(SensorsList &);
 void queueSensorReads(SpscRingBuffer<I2CCommand, 4> &cmd_queue, const AppMode &cur_mode, SensorsList &sensor_list);
-void runOximeter(DriversList &g);
+void runOximeter(DriversList &g, SensorsList &s);
 void serviceWatchdog(DriversList &g, SensorsList &sensor_list, uint32_t &wwdg_refresh_start);
 void appModeOperation(DriversList &g, SensorsList &sensor_list, uint32_t &measure_start);
 void oledScreenUpdate(DriversList &g, SensorsList &sensor_list, uint32_t &disp_start);
@@ -69,7 +67,7 @@ int main()
     DriversList &g = getDrivers();
     SensorsList &sensor_list = getSensors();
 
-    registerCallbacks();
+    registerCallbacks(sensor_list);
     initDriver(g);
     initSensor(sensor_list);
 
@@ -78,17 +76,6 @@ int main()
     }
 
     SpscRingBuffer<I2CCommand, 4> cmd_queue;
-
-    if constexpr (kOxiMeterEnable) {
-	Max30102::SensorConfig oxi_config{Max30102::FifoSampleAvg::AVG4,      Max30102::FifoRollOver::ENABLE,      0, Max30102::SensorMode::SpO2, Max30102::SpO2ADC::SCALE_4096,
-					  Max30102::SpO2SampleRate::RATE_100, Max30102::SpO2PulseWidth::ADC_18BITS};
-	g_oxi_sensor.setConfig(oxi_config);
-
-	if (!g_oxi_sensor.getInit()) {
-	    g_oxi_sensor.init();
-	    LOG_INFO("Part ID: {}", static_cast<uint16_t>(g_oxi_sensor.getPartID()));
-	}
-    }
 
     uint32_t measure_start = g.my_systick.get_ticks();
     uint32_t disp_start = g.my_systick.get_ticks();
@@ -108,15 +95,13 @@ int main()
 	    g_cmd_execute.store(false, std::memory_order_relaxed);
 	}
 
-	if constexpr (kSensorEnable) {
-	    if constexpr (kOxiMeterEnable) {
-		pushCommand(cmd_queue, [](void *ctx) { static_cast<Max30102 *>(ctx)->read(); }, &g_oxi_sensor, "oximeter");
-		runOximeter(g);
-	    }
+#if defined(MAX30102_OXI_EN)
+	pushCommand(cmd_queue, [](void *ctx) { static_cast<MAX30102 *>(ctx)->read(); }, &g_oxi_sensor, "oximeter");
+	runOximeter(g);
+#endif
 
-	    oledScreenUpdate(g, sensor_list, disp_start);
-	    appModeOperation(g, sensor_list, measure_start);
-	}
+	oledScreenUpdate(g, sensor_list, disp_start);
+	appModeOperation(g, sensor_list, measure_start);
 
 	if (g_cmd_complete.load(std::memory_order_acquire)) {
 	    I2CCommand cmd{};
@@ -139,17 +124,15 @@ int main()
 namespace
 {
 
-void registerCallbacks()
+void registerCallbacks(SensorsList &s)
 {
+    // Callback for Uart Rx
     getDrivers().uart2.onDataReceived([](void *ctx, const uint8_t *data, size_t len) { static_cast<Cli *>(ctx)->onUartData(data, len); }, &g_cli);
-    g_cli.setUart(UartRef::from(getDrivers().uart2));
 
-    if constexpr (kSensorEnable) {
-	getDrivers().i2c1.addReceiver(g_cli);
-	if constexpr (kOxiMeterEnable) {
-	    getDrivers().i2c1.addReceiver(g_oxi_sensor);
-	}
-    }
+    // Link object pointer to CLI
+    g_cli.setUart(UartRef::from(getDrivers().uart2));
+    g_cli.setSensor(&s.SENSOR_SHT40X);
+    getDrivers().i2c1.addReceiver(g_cli);
 }
 
 /* ------------------------------------------------------------------ */
@@ -167,21 +150,21 @@ void queueSensorReads(SpscRingBuffer<I2CCommand, 4> &cmd_queue, const AppMode &c
     pushCommand(cmd_queue, [](void *ctx) { static_cast<STTS22H *>(ctx)->read(); }, &sensor_list.SENSOR_STTS22H, "STTS22H");
 }
 
-void runOximeter(DriversList &g)
+void runOximeter(DriversList &g, SensorsList &s)
 {
-    g_oxi_sensor.processData();
+    s.SENSOR_OXI.processData();
 
     char buf[128];
-    if (g_oxi_sensor.isDataReady()) {
-	const FloatIntExtraction spo2 = convertInt(g_oxi_sensor.getData().spo2);
+    if (s.SENSOR_OXI.isDataReady()) {
+	const FloatIntExtraction spo2 = convertInt(s.SENSOR_OXI.getData().spo2);
 	snprintf(buf, sizeof(buf), "BPM and SpO2 Found.");
 	g.disp.show(buf, 0, 0, 0);
-	snprintf(buf, sizeof(buf), "BPM: %d, SpO2: %d.%d", g_oxi_sensor.getData().bpm, spo2.Integer, spo2.Decimal);
+	snprintf(buf, sizeof(buf), "BPM: %d, SpO2: %d.%d", s.SENSOR_OXI.getData().bpm, spo2.Integer, spo2.Decimal);
 	g.disp.show(buf, 0, 8, 1);
-	g_oxi_sensor.clearDataReadyFlag();
+	s.SENSOR_OXI.clearDataReadyFlag();
     }
 
-    if (!g_oxi_sensor.isFingerPresent()) {
+    if (!s.SENSOR_OXI.isFingerPresent()) {
 	snprintf(buf, sizeof(buf), "Finger not Found.");
 	g.disp.show(buf, 0, 0, 0);
 	g.disp.clear_page(1);

@@ -250,15 +250,28 @@ void initDriver(DriversList &g)
     initTimer(g);
     initRtc(g);
     initDisplay(g);
-    // initWatchdog(g);
+#if defined(WATCH_DOG_ENABLE)
+    initWatchdog(g);
+#endif
     LOG_INFO("Boot complete");
 }
 
 void initSensor(SensorsList &g)
 {
+    // Link Sensor to i2c
     getDrivers().i2c1.addReceiver(g.SENSOR_SHT40X);
     getDrivers().i2c1.addReceiver(g.SENSOR_STTS22H);
-    
+#if defined(MAX30102_OXI_EN)
+    getDrivers().i2c1.addReceiver(g.SENSOR_OXI);
+    MAX30102::SensorConfig oxi_config{MAX30102::FifoSampleAvg::AVG4,      MAX30102::FifoRollOver::ENABLE,      0, MAX30102::SensorMode::SpO2, MAX30102::SpO2ADC::SCALE_4096,
+				      MAX30102::SpO2SampleRate::RATE_100, MAX30102::SpO2PulseWidth::ADC_18BITS};
+    g.SENSOR_OXI.setConfig(oxi_config);
+
+    if (!g.SENSOR_OXI.getInit()) {
+	g.SENSOR_OXI.init();
+	LOG_INFO("Part ID: {}", static_cast<uint16_t>(g.SENSOR_OXI.getPartID()));
+    }
+#endif
     checkOk(g.SENSOR_SHT40X.initialize(SHT40X::Command::HIGH_PRECISION), BootTag::Sht40x);
     checkOk(g.SENSOR_STTS22H.initialize(STTS22H::SensorMode::ODR_01HZ), BootTag::Stts2h);
 }

@@ -24,7 +24,11 @@ const uint32_t HSI_Freq_Hz = 16000000;
 
 constexpr bool kSensorEnable = true;
 constexpr bool kSendPacket = false;
-constexpr bool kOxiMeterEnable = false;
+
+// Define State
+#define CONSOLE_APP
+// #define MAX30102_OXI_EN
+// #define WATCH_DOG_ENABLE
 
 /* Custom C++ Library */
 #include "FloatIntExtraction.hpp"
