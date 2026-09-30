@@ -12,6 +12,7 @@
 #include "cpp/systick.hpp"
 #include "cpp/wwdg.hpp"
 #include "rtc/cpp/Stm32RTC.hpp"
+#include "MAX30102.hpp"
 
 template <typename T> struct peripherals_regs_table {
     T *instance;
@@ -37,9 +38,8 @@ struct DriversList {
 struct SensorsList {
     SHT40X SENSOR_SHT40X;
     STTS22H SENSOR_STTS22H;
-    explicit SensorsList(const I2C_Ref &i2c) : SENSOR_SHT40X(i2c), SENSOR_STTS22H(i2c)
-    {
-    }
+    MAX30102 SENSOR_OXI;
+    explicit SensorsList(const I2C_Ref &i2c) : SENSOR_SHT40X(i2c), SENSOR_STTS22H(i2c), SENSOR_OXI(i2c) {};
 };
 
 DriversList &getDrivers();

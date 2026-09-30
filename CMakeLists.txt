@@ -72,6 +72,7 @@ set(sources_SRCS
         ${CMAKE_CURRENT_SOURCE_DIR}/sensors/SHT40X/SHT40X.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/sensors/FC51_IR/FC51_IR.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/sensors/STTS22H/STTS22H.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/sensors/MAX30102/MAX30102.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Src/startup_stm32f401xx.S
 )
 
@@ -105,6 +106,7 @@ set(include_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/sensors/SHT40X
         ${CMAKE_CURRENT_SOURCE_DIR}/sensors/STTS22H
         ${CMAKE_CURRENT_SOURCE_DIR}/sensors/FC51_IR
+        ${CMAKE_CURRENT_SOURCE_DIR}/sensors/MAX30102
 )
 
 # Include directories for each compiler
